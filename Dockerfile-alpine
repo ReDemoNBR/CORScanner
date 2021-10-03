@@ -1,0 +1,19 @@
+FROM python:3-alpine
+
+WORKDIR /opt/corscanner
+
+COPY . .
+
+RUN \
+    # install gevent build dependencies (gcc, musl, libevent etc)
+    apk add --no-cache --virtual .build-deps build-base libffi-dev libevent-dev python3-dev && \
+    pip install --no-cache-dir -r requirements.txt && \
+    # remove build dependencies
+    apk del .build-deps && \
+    chmod +x cors_scan.py && \
+    ln -s /opt/corscanner/cors_scan.py /usr/local/bin/corscanner && \
+    ln -s corscanner /usr/local/bin/cors_scan
+
+ENTRYPOINT ["corscanner"]
+
+CMD ["-h"]

@@ -1,0 +1,22 @@
+extends: default
+
+yaml-files:
+  - '*.yml'
+  - '.yamllint'
+
+ignore: |
+  /.github/
+
+rules:
+  document-start:
+    present: false
+  empty-lines:
+    max: 1
+  empty-values: enable
+  indentation:
+    spaces: 2
+  line-length:
+    max: 100
+  new-line-at-end-of-file: enable
+  octal-values: enable
+  truthy: enable

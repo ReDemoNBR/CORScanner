@@ -1,0 +1,131 @@
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+## declare GitLab job templates
+include:
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+
+default:
+  image: docker:latest
+
+.tag_images: &tag_images
+  - tags=""
+  - |
+    for alias in $TAG ${ALIASES//,/ }; do
+      tags="${tags:+$tags,}$alias"
+    done
+  - |
+    for variant in ${variants//,/ }; do
+      tags="${tags:+$tags,}$variant-$TAG"
+      [ "$TAG" == "$DEFAULT_VARIANT" ] && tags="${tags:+$tags,}$variant"
+    done
+
+stages:
+  - test
+  - build
+  - publish
+
+variables:
+  # networking for job isolation
+  FF_NETWORK_PER_BUILD: 1
+  # Force Docker builds to use BuildKit
+  DOCKER_BUILDKIT: 1
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  CORSCANNER_VERSION: 1.0.1
+  DEFAULT_VARIANT: bullseye
+  PRIVATE_IMAGE_NAME: $CI_REGISTRY/$CI_PROJECT_PATH/$CI_COMMIT_REF_NAME
+  PUBLIC_IMAGE_NAME: redemonbr/corscanner
+
+hadolint:
+  stage: test
+  image: hadolint/hadolint:latest-alpine
+  script:
+    - find ./ -type f -name "Dockerfile*" | xargs hadolint
+
+yamllint:
+  stage: test
+  image: sdesbure/yamllint
+  script:
+    - yamllint --strict ./
+
+## This is an extension from the templated job from GitLab CI
+.secret-analyzer:
+  allow_failure: false
+  dependencies: []
+
+secret_detection:
+  stage: test
+  rules:
+    - when: on_success
+
+.build:
+  stage: build
+  variables:
+    FILE: Dockerfile
+    TAG: ""
+    ALIASES: ""
+  services:
+    - name: docker:dind
+      alias: dind
+      command: ["--tls=false", "--host=tcp://0.0.0.0:2375"]
+  before_script: &before_script
+    - docker login --username $CI_REGISTRY_USER --password $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - major=$(echo $CORSCANNER_VERSION | cut -d. -f1)
+    - minor=$(echo $CORSCANNER_VERSION | cut -d. -f2)
+    - patch=$(echo $CORSCANNER_VERSION | cut -d. -f3)
+    - PRIVATE_IMAGE_NAME=$(echo $PRIVATE_IMAGE_NAME | tr '[:upper:]' '[:lower:]')
+    - variants="$major,$major.$minor,$major.$minor.$patch"
+  script:
+    - *tag_images
+    - args=""
+    - for tag in ${tags//,/ }; do args="$args --tag $PRIVATE_IMAGE_NAME:$tag"; done
+    - echo $args . | xargs docker build --file $FILE
+    - docker push --all-tags $PRIVATE_IMAGE_NAME
+
+build:debian:
+  extends: .build
+  variables:
+    TAG: bullseye
+    ALIASES: latest
+
+build:alpine:
+  extends: .build
+  variables:
+    FILE: Dockerfile-alpine
+    TAG: alpine
+
+.publish:
+  stage: publish
+  services:
+    - name: docker:dind
+      alias: dind
+      command: ["--tls=false", "--host=tcp://0.0.0.0:2375"]
+  variables:
+    TAG: ""
+    ALIASES: ""
+  before_script:
+    - docker login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD
+    - *before_script
+    - docker pull $PRIVATE_IMAGE_NAME:$CORSCANNER_VERSION-$TAG
+  script:
+    - *tag_images
+    - |
+      for tag in ${tags//,/ }; do
+        docker tag $PRIVATE_IMAGE_NAME:$CORSCANNER_VERSION-$TAG $PUBLIC_IMAGE_NAME:$tag
+      done
+    - docker push --all-tags $PUBLIC_IMAGE_NAME
+
+publish:debian:
+  extends: .publish
+  variables:
+    TAG: bullseye
+    ALIASES: latest
+
+publish:alpine:
+  extends: .publish
+  variables:
+    TAG: alpine

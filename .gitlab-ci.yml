@@ -1,9 +1,3 @@
-workflow:
-  rules:
-    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-
 ## declare GitLab job templates
 include:
   - template: Jobs/Secret-Detection.gitlab-ci.yml
@@ -26,6 +20,7 @@ default:
 stages:
   - test
   - build
+  - audit
   - publish
 
 variables:
@@ -98,8 +93,43 @@ build:alpine:
     FILE: Dockerfile-alpine
     TAG: alpine
 
+.audit:grype:
+  stage: audit
+  image: alpine:latest
+  variables:
+    TAG: ""
+    GRYPE_REGISTRY_AUTH_AUTHORITY: $CI_REGISTRY
+    GRYPE_REGISTRY_AUTH_USERNAME: $CI_REGISTRY_USER
+    GRYPE_REGISTRY_AUTH_PASSWORD: $CI_REGISTRY_PASSWORD
+  before_script:
+    # Download grype (anchore/grype)
+    - apk add --no-cache curl
+    # yamllint disable-line rule:line-length
+    - curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/bin
+    - PRIVATE_IMAGE_NAME=$(echo $PRIVATE_IMAGE_NAME | tr '[:upper:]' '[:lower:]')
+  script:
+    - grype --file grype-$TAG-$CI_COMMIT_SHORT_SHA.txt registry:$PRIVATE_IMAGE_NAME:$TAG
+  artifacts:
+    paths:
+      - grype-*.txt
+    expire_in: 30 days
+    when: always
+    public: true
+
+audit:grype:debian:
+  extends: .audit:grype
+  variables:
+    TAG: bullseye
+
+audit:grype:alpine:
+  extends: .audit:grype
+  variables:
+    TAG: alpine
+
 .publish:
   stage: publish
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   services:
     - name: docker:dind
       alias: dind
